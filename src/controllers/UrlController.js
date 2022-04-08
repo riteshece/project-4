@@ -6,7 +6,8 @@ const redis = require("redis");
 
 const {promisify} =require("util");
 
-const {isWebUri} = require("valid-url")
+const {isWebUri} = require("valid-url");
+const UrlModel = require("../models/UrlModel");
 
 //connecting to redis server
 const redisClient = redis.createClient(
@@ -32,12 +33,6 @@ const isValid = function (value) {
     if (typeof value === "string" &&  value.trim().length === 0) return false
     return true
 }
-const isValidRequestBody = function(requestBody){
-
-    return Object.keys(requestBody).length > 0;
-
-}
-
 
 // ==============================================================================================================================
 //1.Post Api is used to create shortUrl from LongUrl 
@@ -45,9 +40,10 @@ const createShortenUrl = async function (req, res) {
     try {
         let requestBody = req.body;
         let longUrl  = req.body.longUrl
-        //mandotary validation
-        if (!isValidRequestBody(requestBody)) {
-            return res.status(400).send({ status: false, msg: "No Parameter Passed In RequestBody" })
+        //mandantory validation
+        if(Object.keys(requestBody) ==0){
+            res.status(400).send({status:false,msg:"no url passed in request in body"})
+            
         }
         if(!isValid(longUrl)){
             return res.status(400).send({status:false,msg:"long url is required"})
@@ -56,60 +52,72 @@ const createShortenUrl = async function (req, res) {
         if (!(isWebUri(longUrl.trim()))) {
             return res.status(400).send({ status: false, msg: "Not a Valid Url" })
         }
-        //unique validation
-        let checkUrl = await shortenModel.findOne({ longUrl })
-        if (checkUrl) {
-            //if url found getting data from redis with key longUrl 
-            
-            let getUrlFromcache = await GET_ASYNC(`${longUrl}`)
-            let parsedUrl = JSON.parse(getUrlFromcache)
-            console.log(parsedUrl)
-            return res.status(400).send({ status: false, msg: "LongUrl is already Present", data: parsedUrl })
-        }
-        else {
-            let baseUrl = "http://localhost:3000"
-            //Generating Short Url Using shortId package
-            const urlCode = shortid.generate(longUrl)
-            //Concating baseUrl and urlCode
-            const shortUrl = baseUrl + "/" + urlCode
-            let saveData = { longUrl, shortUrl, urlCode }
-            let createDocument = await shortenModel.create(saveData)
-            if (createDocument) {
-                //Setting/Storing newly created url in redis database
-                await SET_ASYNC(`${longUrl}`, JSON.stringify(createDocument))
-                return res.status(201).send({ status: true, msg: "ShortUrl Created Successfully", data: createDocument })
-            }
-        }
-    }
-    catch (err) {
-        res.status(500).send({ status: false, msg: err.message })
-    }
+       //Getting data from redis database with key longUrl 
+       let getUrlFromcache = await GET_ASYNC(`${longUrl}`)
+       let parsedUrl = JSON.parse(getUrlFromcache)
+       if (parsedUrl) {
+           return res.status(201).send({ msg: "LongUrl is Present(Cache)", data: parsedUrl })
+       }
+       //If not present in redis
+       if (!parsedUrl) {
+           let checkUrl = await UrlModel.findOne({ longUrl })
+           if (checkUrl) {
+               return res.status(201).send({ msg: "LongUrl is already Present(MongoDB)", data: checkUrl })
+           }
+           else {
+               let baseUrl = "http://localhost:3000"
+
+               //Generating Short Url Using shortId package
+               const urlCode = shortid.generate(longUrl)
+
+               //Concating baseUrl and urlCode
+               const shortUrl = baseUrl + "/" + urlCode.toLowerCase()
+
+               let saveData = { longUrl, shortUrl, urlCode }
+
+               let createDocument = await UrlModel.create(saveData)
+               if (createDocument) {
+                   //Setting/Storing newly created url in redis database
+                   await SET_ASYNC(`${longUrl}`, JSON.stringify(createDocument))
+                   return res.status(201).send({ status: true, msg: "ShortUrl Created Successfully", data: createDocument })
+               }
+           }
+       }
+   }
+   catch (err) {
+       res.status(500).send({ status: false, msg: err.message })
+   }
 }
 
-// ========================================================================================================
-//2.Get Api(that is second and  get api which redirect a long link)
 
+
+//2.Get Api
 const redirectUrl = async function (req, res) {
-    try {
-        let urlCode = req.params.urlCode;
-        //Geting Url from redis database
-        let getUrl = await GET_ASYNC(`${urlCode}`)
-        let parsedUrl = JSON.parse(getUrl)
-        if (parsedUrl) {
-            return res.status(302).redirect(parsedUrl.longUrl)
-        }
-        else {
-            let setUrl = await shortenModel.findOne({ urlCode });
-            if (!setUrl) {
-                return res.status(404).send({ status: false, msg: "No URL Found" })
-            }
-            //found url is storing in redis database 
-            await SET_ASYNC(`${urlCode}`, JSON.stringify(setUrl))
-            return res.status(302).redirect(setUrl.longUrl)
-        }
-    }
-    catch (err) {
-        res.status(500).send({ status: false, msg: err.message })
-    }
+   try {
+       let urlCode = req.params.urlCode;
+
+       //Geting Url from redis database(cache)
+       let getUrl = await GET_ASYNC(`${urlCode}`)
+       let parsedUrl = JSON.parse(getUrl)
+
+       if (parsedUrl) {
+           return res.status(302).redirect(parsedUrl.longUrl)
+       }
+       else {
+           let setUrl = await UrlModel.findOne({ urlCode });
+           if (!setUrl) {
+               return res.status(404).send({ status: false, msg: "No URL Found" })
+           }
+           //found url is storing in redis database(cache) 
+           await SET_ASYNC(`${urlCode}`, JSON.stringify(setUrl))
+           return res.status(302).redirect(setUrl.longUrl)
+       }
+   }
+   catch (err) {
+       res.status(500).send({ status: false, msg: err.message })
+   }
+
 }
+
+
 module.exports = { createShortenUrl, redirectUrl }
